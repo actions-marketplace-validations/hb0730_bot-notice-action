@@ -35635,106 +35635,159 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.WechatBot = exports.FeishuBot = exports.DefaultBot = void 0;
-const crypto_js_1 = __importDefault(__nccwpck_require__(4134));
-const utils_1 = __importDefault(__nccwpck_require__(1314));
+exports.DefaultBot = exports.MsgType = exports.BotType = exports.BuildNotification = exports.JobStatus = void 0;
+const core = __importStar(__nccwpck_require__(2186));
 const http = __importStar(__nccwpck_require__(6255));
 const js_yaml_1 = __importDefault(__nccwpck_require__(1917));
-const core = __importStar(__nccwpck_require__(2186));
-var BotTypeEnum;
-(function (BotTypeEnum) {
-    BotTypeEnum["feishu"] = "feishu";
-    BotTypeEnum["dingtalk"] = "dingtalk";
-    BotTypeEnum["wechat"] = "wechat";
-})(BotTypeEnum || (BotTypeEnum = {}));
-var MsgTypeEnum;
-(function (MsgTypeEnum) {
+const crypto_js_1 = __importDefault(__nccwpck_require__(4134));
+const utils_1 = __importDefault(__nccwpck_require__(1314));
+var JobStatus;
+(function (JobStatus) {
+    JobStatus["SUCCESS"] = "success";
+    JobStatus["FAILED"] = "failure";
+    JobStatus["CANCELLED"] = "cancelled";
+    JobStatus["UNKNOWN"] = "unknown";
+})(JobStatus || (exports.JobStatus = JobStatus = {}));
+var BuildNotification;
+(function (BuildNotification) {
+    BuildNotification["ALWAYS"] = "always";
+    BuildNotification["SUCCESS"] = "success";
+    BuildNotification["FAILED"] = "failure";
+    BuildNotification["CANCELLED"] = "cancelled";
+    BuildNotification["NEVER"] = "never";
+})(BuildNotification || (exports.BuildNotification = BuildNotification = {}));
+var BotType;
+(function (BotType) {
+    BotType["WECHAT"] = "wechat";
+    BotType["FEISHU"] = "feishu";
+    BotType["DINGTALK"] = "dingtalk";
+})(BotType || (exports.BotType = BotType = {}));
+var MsgType;
+(function (MsgType) {
     // supported Feishu,Wechat
-    MsgTypeEnum["text"] = "text";
+    MsgType["text"] = "text";
     // supported: Feishu
-    MsgTypeEnum["post"] = "post";
+    MsgType["post"] = "post";
     // supported: Feishu
-    MsgTypeEnum["share_chat"] = "share_chat";
+    MsgType["share_chat"] = "share_chat";
     // supported: Feishu
-    MsgTypeEnum["interactive"] = "interactive";
+    MsgType["interactive"] = "interactive";
     // supported: Feishu,Wechat
-    MsgTypeEnum["image"] = "image";
+    MsgType["image"] = "image";
     // supported: Wechat
-    MsgTypeEnum["markdown"] = "markdown";
+    MsgType["markdown"] = "markdown";
     // supported: Wechat
-    MsgTypeEnum["news"] = "news";
+    MsgType["news"] = "news";
     // supported: Wechat
-    MsgTypeEnum["file"] = "file";
+    MsgType["file"] = "file";
     // supported: Wechat
-    MsgTypeEnum["template_card"] = "template_card";
-})(MsgTypeEnum || (MsgTypeEnum = {}));
-/**
- * Default bot,自动适配
- */
+    MsgType["template_card"] = "template_card";
+})(MsgType || (exports.MsgType = MsgType = {}));
 class DefaultBot {
-    botOptions;
-    constructor(botOptions) {
-        this.botOptions = botOptions;
+    options;
+    constructor(options) {
+        this.options = options;
     }
-    start() {
-        const botType = BotTypeEnum[this.botOptions.bot];
+    start(message) {
         let botClient;
-        if (botType === BotTypeEnum.feishu) {
-            core.debug('Adapting Feishu Bot');
-            const feishuClient = new FeishuBot(this.botOptions.webhook);
-            feishuClient.secret = this.botOptions.secret;
-            botClient = feishuClient;
-        }
-        else if (botType === BotTypeEnum.wechat) {
-            core.debug('Adapting Wechat Bot');
-            const wechatClient = new WechatBot(this.botOptions.webhook);
-            botClient = wechatClient;
-        }
-        else {
-            throw new Error(`Unsupported bot type: ${botType}`);
+        switch (this.options.bot) {
+            case BotType.WECHAT:
+                core.debug(`Adapting to WechatBot`);
+                botClient = new WechatBot(this.options);
+                break;
+            case BotType.FEISHU:
+                core.debug(`Adapting to FeishuBot`);
+                botClient = new FeishuBot(this.options);
+                break;
+            default:
+                throw new Error(`unknown bot type: ${this.options.bot}`);
         }
         if (!botClient) {
-            throw new Error(`Unsupported bot type: ${botType}`);
+            throw new Error(`unknown bot type: ${this.options.bot}`);
         }
-        return botClient.send(this.botOptions.msg_type, this.botOptions.content, this.botOptions.simplified === true);
+        switch (message.onNotification) {
+            case BuildNotification.ALWAYS:
+                return botClient.send(message);
+            case BuildNotification.SUCCESS:
+                if (message.jobStatus === JobStatus.SUCCESS) {
+                    return botClient.send(message);
+                }
+            case BuildNotification.FAILED:
+                if (message.jobStatus === JobStatus.FAILED) {
+                    return botClient.send(message);
+                }
+            case BuildNotification.CANCELLED:
+                if (message.jobStatus === JobStatus.CANCELLED) {
+                    return botClient.send(message);
+                }
+            case BuildNotification.NEVER:
+            default:
+                core.debug(`skip sending message, onNotification: ${message.onNotification}, jobStatus: ${message.jobStatus}`);
+                return Promise.resolve({
+                    success: true,
+                    msg: 'success'
+                });
+        }
     }
 }
 exports.DefaultBot = DefaultBot;
-/**
- * Feishu bot
- */
 class FeishuBot {
-    webhook;
-    secret;
-    _client;
-    constructor(webhook) {
-        this.webhook = webhook;
-        this._client = new http.HttpClient('bot-notice-action/1.0.0');
+    options;
+    client;
+    constructor(options) {
+        this.options = options;
+        this.client = new http.HttpClient();
     }
-    async send(msgType, content, simplified) {
+    async send(message) {
+        let content = message.content;
+        if (!content) {
+            throw new Error('content is empty');
+        }
+        // 失败时at所有人
+        if (message.failedAtAll && message.jobStatus === JobStatus.FAILED) {
+            let at_all = ``;
+            switch (message.msgType) {
+                case MsgType.text:
+                    at_all = `<at user_id="all">所有人</at> `;
+                    break;
+                case MsgType.interactive:
+                    at_all = `<at id=all></at>`;
+                    break;
+                default:
+                    break;
+            }
+            if (at_all) {
+                content = utils_1.default.renderTemplate(content, { '@all': at_all });
+            }
+        }
+        // 成功时取消at所有人
+        if (message.failedAtAll && message.jobStatus === JobStatus.SUCCESS) {
+            content = utils_1.default.renderTemplate(content, { '@all': '' });
+        }
         let _response = '';
-        if (!simplified) {
-            _response = await this.sendMessage(msgType, content);
+        // 非简化的内容
+        if (!message.simplified) {
+            _response = await this.sendMessage(message.msgType, content);
         }
         else {
-            const _msgType = MsgTypeEnum[msgType];
-            if (_msgType === MsgTypeEnum.text) {
-                _response = await this.sendText(content);
-            }
-            else if (_msgType === MsgTypeEnum.post) {
-                _response = await this.sendPost(content);
-            }
-            else if (_msgType === MsgTypeEnum.share_chat) {
-                _response = await this.sendShareChat(content);
-            }
-            else if (_msgType === MsgTypeEnum.interactive) {
-                _response = await this.sendInteractive(content);
-            }
-            else if (_msgType === MsgTypeEnum.image) {
-                _response = await this.sendImage(content);
-            }
-            else {
-                throw new Error(`Unsupported msg type: ${_msgType}`);
+            switch (message.msgType) {
+                case MsgType.text:
+                    _response = await this.sendText(content);
+                    break;
+                case MsgType.post:
+                    _response = await this.sendPost(content);
+                    break;
+                case MsgType.share_chat:
+                    _response = await this.sendShareChat(content);
+                    break;
+                case MsgType.image:
+                    _response = await this.sendImage(content);
+                    break;
+                case MsgType.interactive:
+                    _response = await this.sendInteractive(content);
+                    break;
+                default:
+                    throw new Error(`unsupport message type: ${message.msgType}`);
             }
         }
         const { code, msg } = JSON.parse(_response);
@@ -35761,7 +35814,7 @@ class FeishuBot {
      */
     async sendText(text) {
         const message = {
-            msg_type: 'text',
+            msg_type: MsgType.text,
             content: {
                 text: text
             }
@@ -35775,7 +35828,7 @@ class FeishuBot {
      */
     async sendPost(content) {
         const message = {
-            msg_type: 'post',
+            msg_type: MsgType.post,
             content: {
                 post: js_yaml_1.default.load(content)
             }
@@ -35789,7 +35842,7 @@ class FeishuBot {
      */
     async sendShareChat(content) {
         const message = {
-            msg_type: 'share_chat',
+            msg_type: MsgType.share_chat,
             content: {
                 share_chat_id: content
             }
@@ -35803,7 +35856,7 @@ class FeishuBot {
      */
     async sendImage(content) {
         const message = {
-            msg_type: 'image',
+            msg_type: MsgType.image,
             content: {
                 image_key: content
             }
@@ -35817,64 +35870,81 @@ class FeishuBot {
      */
     async sendInteractive(content) {
         const message = {
-            msg_type: 'interactive',
+            msg_type: MsgType.interactive,
             card: js_yaml_1.default.load(content)
         };
         return await this.post(message);
     }
     async post(message) {
-        if (utils_1.default.exits(this.secret)) {
+        if (utils_1.default.exits(this.options.secret)) {
             const timestamp = utils_1.default.genTimeStamp10();
             message.timestamp = timestamp;
             message.sign = this.genSign(timestamp);
         }
         core.debug(`send message: ${JSON.stringify(message)}`);
-        const response = await this._client.post(this.webhook, JSON.stringify(message), {
-            'Content-type': 'application/json'
+        const response = await this.client.post(this.options.webhook, JSON.stringify(message), {
+            'Content-Type': 'application/json'
         });
         return response.readBody();
     }
     genSign(timestamp) {
-        const key = `${timestamp}\n${this.secret}`;
+        const key = `${timestamp}\n${this.options.secret}`;
         const signature = crypto_js_1.default.HmacSHA256('', key).toString(crypto_js_1.default.enc.Base64);
         return signature;
     }
 }
-exports.FeishuBot = FeishuBot;
 class WechatBot {
-    webhook;
-    _client;
-    constructor(webhook) {
-        this.webhook = webhook;
-        this._client = new http.HttpClient('bot-notice-action/1.0.0');
+    options;
+    client;
+    constructor(options) {
+        this.options = options;
+        this.client = new http.HttpClient();
     }
-    async send(msgType, content, simplified) {
+    async send(message) {
+        let content = message.content;
+        if (message.failedAtAll && message.jobStatus === JobStatus.FAILED) {
+            let at_all = '';
+            switch (message.msgType) {
+                case MsgType.text:
+                    at_all = '@all';
+                    break;
+                default:
+                    break;
+            }
+            if (at_all) {
+                content = utils_1.default.renderTemplate(content, { '@all': at_all });
+            }
+        }
+        // 成功时取消at所有人
+        if (message.failedAtAll && message.jobStatus === JobStatus.SUCCESS) {
+            content = utils_1.default.renderTemplate(content, { '@all': '' });
+        }
         let _response = '';
-        if (!simplified) {
-            _response = await this.sendMessage(msgType, content);
+        if (!message.simplified) {
+            _response = await this.sendMessage(message.msgType, content);
         }
         else {
-            const _msgType = MsgTypeEnum[msgType];
-            if (_msgType === MsgTypeEnum.text) {
-                _response = await this.sendText(content);
-            }
-            else if (_msgType === MsgTypeEnum.image) {
-                _response = await this.sendImage(content);
-            }
-            else if (_msgType === MsgTypeEnum.markdown) {
-                _response = await this.sendMarkdown(content);
-            }
-            else if (_msgType === MsgTypeEnum.news) {
-                _response = await this.sendNews(content);
-            }
-            else if (_msgType === MsgTypeEnum.file) {
-                _response = await this.sendFile(content);
-            }
-            else if (_msgType === MsgTypeEnum.template_card) {
-                _response = await this.sendTemplateCard(content);
-            }
-            else {
-                throw new Error(`Unsupported msg type: ${_msgType}`);
+            switch (message.msgType) {
+                case MsgType.text:
+                    _response = await this.sendText(content);
+                    break;
+                case MsgType.markdown:
+                    _response = await this.sendMarkdown(content);
+                    break;
+                case MsgType.image:
+                    _response = await this.sendImage(content);
+                    break;
+                case MsgType.news:
+                    _response = await this.sendNews(content);
+                    break;
+                case MsgType.file:
+                    _response = await this.sendFile(content);
+                    break;
+                case MsgType.template_card:
+                    _response = await this.sendTemplateCard(content);
+                    break;
+                default:
+                    throw new Error(`unsupport message type: ${message.msgType}`);
             }
         }
         const { errcode, errmsg } = JSON.parse(_response);
@@ -35890,7 +35960,7 @@ class WechatBot {
     }
     async sendText(text) {
         const message = {
-            msgtype: 'text',
+            msgtype: MsgType.text,
             text: {
                 content: text
             }
@@ -35899,7 +35969,7 @@ class WechatBot {
     }
     async sendMarkdown(content) {
         const message = {
-            msgtype: 'markdown',
+            msgtype: MsgType.markdown,
             markdown: {
                 content: content
             }
@@ -35908,21 +35978,21 @@ class WechatBot {
     }
     async sendImage(content) {
         const message = {
-            msgtype: 'image',
+            msgtype: MsgType.image,
             image: js_yaml_1.default.load(content)
         };
         return await this.post(message);
     }
     async sendNews(content) {
         const message = {
-            msgtype: 'news',
+            msgtype: MsgType.news,
             news: js_yaml_1.default.load(content)
         };
         return await this.post(message);
     }
     async sendFile(content) {
         const message = {
-            msgtype: 'file',
+            msgtype: MsgType.file,
             file: {
                 media_id: content
             }
@@ -35931,25 +36001,24 @@ class WechatBot {
     }
     async sendTemplateCard(content) {
         const message = {
-            msgtype: 'template_card',
+            msgtype: MsgType.template_card,
             template_card: js_yaml_1.default.load(content)
         };
         return await this.post(message);
     }
     async post(message) {
         core.debug(`send message: ${JSON.stringify(message)}`);
-        const response = await this._client.post(this.webhook, JSON.stringify(message), {
-            'Content-type': 'application/json'
+        const response = await this.client.post(this.options.webhook, JSON.stringify(message), {
+            'Content-Type': 'application/json'
         });
         return response.readBody();
     }
 }
-exports.WechatBot = WechatBot;
 
 
 /***/ }),
 
-/***/ 6144:
+/***/ 8188:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -35983,15 +36052,17 @@ const core = __importStar(__nccwpck_require__(2186));
 const bot_1 = __nccwpck_require__(8104);
 async function run() {
     try {
-        core.info('Bot Notice Action Start ....');
-        const botOptions = readInputs();
+        core.info('Bot Notification Action Start ....');
+        const botOptions = readBotInputs();
+        const message = readMessageInputs();
+        core.debug(`Bot Options: ${JSON.stringify(botOptions)}, Message: ${JSON.stringify(message)}`);
         const bot = new bot_1.DefaultBot(botOptions);
-        const response = await bot.start();
+        const response = await bot.start(message);
         if (!response.success) {
             throw new Error(response.msg);
         }
         core.setOutput('response', response);
-        core.info('Bot Notice Action Successful');
+        core.info('Bot Notification Action Successful ....');
     }
     catch (error) {
         if (error instanceof Error) {
@@ -36000,17 +36071,83 @@ async function run() {
     }
 }
 exports.run = run;
-function readInputs() {
+function readBotInputs() {
+    const webhook = core.getInput('webhook', { required: true });
+    const secret = core.getInput('secret');
+    const bot = core.getInput('bot', { required: true });
+    let _bot = bot_1.BotType.FEISHU;
+    if (bot && bot.toLowerCase()) {
+        switch (bot) {
+            case bot_1.BotType.FEISHU:
+                _bot = bot_1.BotType.FEISHU;
+                break;
+            case bot_1.BotType.WECHAT:
+                _bot = bot_1.BotType.WECHAT;
+                break;
+            default:
+                throw new Error(`unknown bot type: ${bot}`);
+        }
+    }
     return {
-        webhook: core.getInput('webhook', { required: true }),
-        secret: core.getInput('secret'),
-        bot: core.getInput('bot'),
-        msg_type: core.getInput('msg_type'),
-        simplified: core.getInput('simplified') === 'true',
-        content: core.getInput('content')
+        webhook,
+        secret,
+        bot: _bot
     };
 }
-run();
+function readMessageInputs() {
+    const defaultMsg = {
+        jobStatus: bot_1.JobStatus.UNKNOWN,
+        onNotification: bot_1.BuildNotification.ALWAYS,
+        simplified: false,
+        msgType: bot_1.MsgType.text,
+        content: '',
+        failedAtAll: false
+    };
+    const msg = defaultMsg;
+    const jobStatus = core.getInput('job_status', { required: true });
+    switch (jobStatus.toLowerCase()) {
+        case bot_1.JobStatus.SUCCESS:
+            msg.jobStatus = bot_1.JobStatus.SUCCESS;
+            break;
+        case bot_1.JobStatus.FAILED:
+            msg.jobStatus = bot_1.JobStatus.FAILED;
+            break;
+        case bot_1.JobStatus.CANCELLED:
+            msg.jobStatus = bot_1.JobStatus.CANCELLED;
+            break;
+        default:
+            throw new Error(`unknown job status: ${jobStatus}`);
+    }
+    const onNotification = core.getInput('on_notification') || 'always';
+    switch (onNotification.toLowerCase()) {
+        case bot_1.BuildNotification.ALWAYS:
+            msg.onNotification = bot_1.BuildNotification.ALWAYS;
+            break;
+        case bot_1.BuildNotification.SUCCESS:
+            msg.onNotification = bot_1.BuildNotification.SUCCESS;
+            break;
+        case bot_1.BuildNotification.FAILED:
+            msg.onNotification = bot_1.BuildNotification.FAILED;
+            break;
+        case bot_1.BuildNotification.CANCELLED:
+            msg.onNotification = bot_1.BuildNotification.CANCELLED;
+            break;
+        case bot_1.BuildNotification.NEVER:
+            msg.onNotification = bot_1.BuildNotification.NEVER;
+            break;
+        default:
+            throw new Error(`unknown on notification: ${onNotification}`);
+    }
+    const simplified = core.getBooleanInput('simplified');
+    defaultMsg.simplified = simplified;
+    const msgtype = core.getInput('msg_type', { required: true });
+    defaultMsg.msgType = msgtype;
+    const content = core.getInput('content', { required: true });
+    defaultMsg.content = content;
+    const failedAtAll = core.getBooleanInput('on_failure_at_all');
+    defaultMsg.failedAtAll = failedAtAll;
+    return defaultMsg;
+}
 
 
 /***/ }),
@@ -36048,10 +36185,27 @@ function genTimeStamp10() {
     const timestamp = Date.now();
     return String(timestamp).slice(0, 10);
 }
+/**
+ *  渲染模板，替换变量
+ * @param value 内容,如"hello ${name}+${age}"
+ * @param data 模板变量,{name: "张三", age: 18}
+ * @returns 替换后的内容
+ */
+function renderTemplate(value, data) {
+    const keys = Object.keys(data);
+    const dataList = keys.map(function (key) {
+        return data[key];
+    });
+    for (var i = 0; i < keys.length; i++) {
+        value = value.replace(new RegExp('\\$\\{' + keys[i] + '\\}', 'gm'), dataList[i]);
+    }
+    return value;
+}
 exports["default"] = {
     exits,
     isString,
-    genTimeStamp10
+    genTimeStamp10,
+    renderTemplate
 };
 
 
@@ -37938,12 +38092,19 @@ module.exports = parseParams
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-/******/ 	
-/******/ 	// startup
-/******/ 	// Load entry module and return exports
-/******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __nccwpck_require__(6144);
-/******/ 	module.exports = __webpack_exports__;
-/******/ 	
+var __webpack_exports__ = {};
+// This entry need to be wrapped in an IIFE because it need to be in strict mode.
+(() => {
+"use strict";
+var exports = __webpack_exports__;
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const core_1 = __nccwpck_require__(8188);
+// eslint-disable-next-line @typescript-eslint/no-floating-promises
+(0, core_1.run)();
+
+})();
+
+module.exports = __webpack_exports__;
 /******/ })()
 ;
